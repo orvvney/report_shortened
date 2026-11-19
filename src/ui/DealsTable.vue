@@ -1,0 +1,75 @@
+<script setup>
+import { computed, ref, watch } from 'vue';
+import CustomerName from './CustomerName.vue';
+import ReportDate from './ReportDate.vue';
+import table from '../report/deals-table.cjs';
+const props = defineProps({ deals: { type: Array, default: () => [] }, parking: Boolean, detailsLoading: Boolean, detailsFailed: Boolean, filters: Object, loading: Boolean, failed: Boolean });
+const columns = computed(() => table.columns.filter(([key]) => !props.parking || !['entrance', 'rooms', 'area'].includes(key)));
+const emit = defineEmits(['expand', 'retry']);
+const expanded = ref(false), page = ref(1), sortKey = ref('date'), direction = ref('desc');
+const sectionHelpOpen = ref(false);
+watch(expanded, value => emit('expand', value));
+const unavailable = computed(() => props.loading || props.failed);
+const sorted = computed(() => table.sortRows(props.deals, sortKey.value, direction.value));
+const paged = computed(() => table.paginate(sorted.value, page.value));
+watch(() => JSON.stringify(props.filters), () => { page.value = 1; });
+watch(() => props.deals, () => {
+  if (!unavailable.value) page.value = paged.value.page;
+});
+function sort(key) {
+  direction.value = sortKey.value === key && direction.value === 'asc' ? 'desc' : 'asc';
+  sortKey.value = key;
+  page.value = 1;
+}
+</script>
+
+<template>
+  <section class="deals-list" aria-labelledby="deals-list-heading" :aria-busy="loading">
+    <div class="deals-list-header" @click="expanded = !expanded">
+      <div class="filter-title" @mouseenter="sectionHelpOpen = true" @mouseleave="sectionHelpOpen = false" @keydown.esc="sectionHelpOpen = false">
+      <h2 id="deals-list-heading">
+      <button type="button" class="deals-list-toggle" :aria-expanded="expanded" aria-controls="deals-list-content" @click.stop="expanded = !expanded">
+        <span>Գործարքների ցանկ</span>
+      </button>
+      </h2>
+      <button type="button" class="filter-help" aria-label="Գործարքների մասին" aria-describedby="deals-help-text"
+        @mouseenter="sectionHelpOpen = true" @focus="sectionHelpOpen = true" @blur="sectionHelpOpen = false" @click.stop="sectionHelpOpen = true">!</button>
+      <div v-show="sectionHelpOpen" id="deals-help-text" class="filter-help-tooltip" :class="{ 'deals-help-above': !expanded }" role="tooltip" @click.stop>Այս բաժինը նախատեսված է ընտրված զտիչներին համապատասխանող բոլոր գործարքները դիտելու համար։</div>
+      </div>
+        <span class="deals-list-count" data-testid="deals-list-count">{{ unavailable ? '—' : deals.length }}</span>
+        <svg class="deals-list-chevron" :class="{ 'is-expanded': expanded }" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+    </div>
+    <div v-show="expanded" id="deals-list-content" class="deals-list-content">
+      <p v-if="loading || detailsLoading" class="kpi-notice" role="status">Տվյալները բեռնվում են…</p>
+      <p v-else-if="failed" class="kpi-notice" role="status">Տվյալներն անհասանելի են։</p>
+      <p v-else-if="detailsFailed" class="kpi-notice" role="status">Տվյալներն անհասանելի են։ <button type="button" @click="emit('retry')">Կրկին փորձել</button></p>
+      <template v-else-if="deals.length">
+        <div class="deals-list-scroll" role="region" aria-label="Գործարքների աղյուսակ" tabindex="0">
+          <table>
+            <thead><tr>
+              <th v-for="[key, label] in columns" :key="key" scope="col"
+                :aria-sort="sortKey === key ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                <button type="button" @click="sort(key)"><template v-if="key === 'date'"><span class="desktop-text">{{ label }}</span><span class="mobile-text">Կնքված՝</span></template><template v-else>{{ label }}</template><span aria-hidden="true">{{ sortKey === key ? (direction === 'asc' ? ' ↑' : ' ↓') : ' ↕' }}</span></button>
+              </th>
+            </tr></thead>
+            <tbody><tr v-for="row in paged.rows" :key="row.id">
+              <td v-for="[key] in columns" :key="key">
+                <a v-if="key === 'customerName'" :href="row.url" target="_blank" rel="noopener noreferrer"><CustomerName :name="table.cellText(row, key)" /></a>
+                <ReportDate v-else-if="key === 'date'" :text="table.cellText(row, key)" />
+                <template v-else>{{ table.cellText(row, key) }}</template>
+              </td>
+            </tr></tbody>
+          </table>
+        </div>
+        <nav v-if="paged.pages > 1" class="kpi-pagination deals-list-pagination" aria-label="Գործարքների ցանկի էջեր">
+          <button type="button" :disabled="paged.page === 1" @click="page = paged.page - 1">Նախորդ</button>
+          <span aria-live="polite">{{ paged.page }} / {{ paged.pages }}</span>
+          <button type="button" :disabled="paged.page === paged.pages" @click="page = paged.page + 1">Հաջորդ</button>
+        </nav>
+      </template>
+      <p v-else class="kpi-notice" role="status">Տվյալներ չկան</p>
+    </div>
+  </section>
+</template>

@@ -1,0 +1,311 @@
+const { createExpoLoader } = require('../../src/report/expo-load.cjs');
+const { createServer } = require('../../server.js');
+const env = { BITRIX24_WEBHOOK_URL: 'https://portal.example/rest/1/expo-test-secret/' };
+const { fixture } = require('../support/expo-fixture.cjs');
+test('loads all source 305 leads and independent deals, with Yerevan creation dates and safe links', async () => {
+  const f = fixture(), load = createExpoLoader(f.options);
+  const result = await load();
+  expect(result.status).toBe(200);
+  expect(result.body.sourceId).toBe('UC_TOON_EXPO');
+  expect(result.body.leads).toHaveLength(49);
+  expect(result.body.leads[0]).toMatchObject({ date: '2026-11-01', url: 'https://portal.example/crm/lead/details/2/' });
+  expect(result.body.deals.map(row => row.id)).toEqual([74, 73]);
+  expect(result.body.directDeals.map(row => row.id)).toEqual([71]);
+  expect(result.body.leads[0].customerName).toBe('Արամ Ազգանուն 2');
+  expect(result.body.deals[0].customerName).toBe('Արամ Ազգանուն 1');
+  expect(result.body.directDeals[0].customerName).toBe('Անի Պետրոսյան');
+  expect(result.body.directDeals[0]).toMatchObject({ id: 71, date: '2026-11-01', url: 'https://portal.example/crm/deal/details/71/' });
+  expect(f.requests.filter(row => row.method === 'crm.lead.list').map(row => row.params.start)).toEqual([0, 50]);
+  expect(f.requests.filter(row => row.method === 'crm.deal.list')).toHaveLength(4);
+  const calls = f.requests.length;
+  result.body.leads.length = 0;
+  expect((await load()).body.leads).toHaveLength(49);
+  expect(f.requests).toHaveLength(calls);
+  const metadataCalls=f.requests.filter(row=>row.method==='crm.status.list').length;
+  await load({ refresh: true });
+  expect(f.requests.filter(row=>row.method==='crm.status.list')).toHaveLength(metadataCalls);
+  expect(f.requests.filter(row=>row.method==='crm.lead.list')).toHaveLength(4);
+});
+test('reads every page of source deals even with no leads', async () => {
+  const f = fixture(0); f.deals.splice(0, f.deals.length, ...Array.from({ length: 51 }, (_, i) => ({ ID: String(i + 1), LEAD_ID: '0', SOURCE_ID: 'UC_TOON_EXPO', STAGE_ID: 'NEW', DATE_CREATE: '2026-11-01T10:00:00Z', TITLE: 'Deal' })));
+  const result = await createExpoLoader(f.options)();
+  expect(result.body.directDeals).toHaveLength(51);
+  expect(f.requests.filter(row => row.method === 'crm.deal.list').map(row => row.params.start).sort((a,b)=>a-b)).toEqual([0, 0, 50]);
+});
+test('empty leads still read deals; cache expires after five minutes and coalesces simultaneous reads', async () => {
+  const f = fixture(0); let time = 0;
+  const load = createExpoLoader({ ...f.options, now: () => new Date(time) });
+  await Promise.all([load(), load()]); expect(f.requests).toHaveLength(8);
+  expect((await load()).body.leads).toEqual([]);
+  time = 300000; await load(); expect(f.requests).toHaveLength(12);
+});
+test.each(['source', 'date', 'deal-source', 'deal-date', 'page'])('fails closed on invalid %s and clears stale data after a failed refresh', async kind => {
+  const f = fixture(), load = createExpoLoader(f.options);
+  expect((await load()).status).toBe(200);
+  if (kind === 'source') f.leads[0].SOURCE_ID = '306';
+  if (kind === 'date') f.leads[0].DATE_CREATE = 'bad';
+  if (kind === 'deal-source') f.deals[0].SOURCE_ID = '306';
+  if (kind === 'deal-date') f.deals[0].DATE_CREATE = 'bad';
+  if (kind === 'page') f.leads[50].ID = '1';
+  expect(await load({ refresh: true })).toEqual({ status: 502, body: { error: 'CRM_READ_ERROR' } });
+  expect((await load()).status).toBe(502);
+});
+test('serves an independent no-store API and redacts CRM failures', async () => {
+  const f = fixture(1), server = createServer(f.options);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/toon-expo?refresh=1`);
+    expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
+    const text = await response.text(); expect(text).not.toContain('expo-test-secret'); expect(text).not.toContain('/rest/');
+    expect(JSON.parse(text).leads).toHaveLength(0);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+  expect(await createExpoLoader({ env: { BITRIX24_WEBHOOK_URL: '' } })()).toEqual({ status: 500, body: { error: 'CONFIGURATION_ERROR' } });
+});
+
+test.each([[], [{ ID: '305', STATUS_ID: '' }], [{ ID: '305', STATUS_ID: 'A' }, { ID: '305', STATUS_ID: 'B' }]].map(entries => [entries]))('rejects missing or ambiguous directory codes without falling back to numeric source ID', async entries => {
+  const f = fixture();
+  f.stages.SOURCE = entries;
+  expect(await createExpoLoader(f.options)()).toEqual({ status: 502, body: { error: 'CRM_READ_ERROR' } });
+  expect(f.requests.some(row=>row.method==='crm.lead.list')).toBe(false);
+});
+
+test('excludes converted leads once even with multiple deals while preserving every converted deal', async () => {
+  const f = fixture(3);
+  f.deals.push({ ID: '75', LEAD_ID: '1', SOURCE_ID: 'OTHER', STAGE_ID: 'NEW', DATE_CREATE: '2026-11-01T10:00:00Z', TITLE: 'Earlier deal' });
+  const result = await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.leads.map(row => row.id)).toEqual([2, 3]);
+  expect(result.body.deals.map(row => row.id)).toEqual([74, 75]);
+  expect(result.body.directDeals.map(row => row.id)).toEqual([71]);
+});
+
+test('resolves lead and deal stage names by pipeline with one directory read per entity', async () => {
+  const f = fixture(3);
+  f.leads.forEach(row => { row.STATUS_ID = 'NEW'; });
+  f.deals[0].STAGE_ID = 'NEW'; f.deals[0].CATEGORY_ID = '0';
+  f.deals[3].STAGE_ID = 'C3:WON'; f.deals[3].CATEGORY_ID = '3';
+  f.deals.push({ ...f.deals[3], ID: '75' });
+  const result = await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.leads.map(row => [row.stageId, row.stageName])).toEqual([['NEW', 'Նոր լիդ'], ['NEW', 'Նոր լիդ']]);
+  expect(result.body.directDeals[0]).toMatchObject({ stageId: 'NEW', stageName: 'Նոր գործարք' });
+  expect(result.body.deals.map(row => row.stageName)).toEqual(['Կնքված', 'Կնքված']);
+  expect(f.requests.filter(row => row.method === 'crm.status.list').map(row => row.params.filter.ENTITY_ID)).toEqual(['SOURCE', 'STATUS', 'DEAL_STAGE', 'DEAL_STAGE_3']);
+  expect(f.requests.find(row => row.method === 'crm.lead.list').params.select).toContain('STATUS_ID');
+  for (const row of f.requests.filter(row => row.method === 'crm.deal.list')) expect(row.params.select).toEqual(expect.arrayContaining(['STAGE_ID', 'CATEGORY_ID']));
+});
+test('excludes missing and unknown stages from the report', async () => {
+  const f = fixture(3);
+  f.leads[1].STATUS_ID = 'CUSTOM';
+  const result = await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  f.leads[2].STATUS_ID = null;
+  const refreshed = await createExpoLoader(f.options)();
+  expect(refreshed.body.leads).toEqual([]);
+});
+test('clears stale snapshot if a stage directory cannot be read during refresh', async () => {
+  const f = fixture(3); f.leads[1].STATUS_ID = 'NEW';
+  let time=0; f.options.now=()=>new Date(time);
+  const load = createExpoLoader(f.options);
+  expect((await load()).status).toBe(200);
+  time=24*60*60*1000;
+  f.stages.STATUS = { invalid: true };
+  expect(await load({ refresh: true })).toEqual({ status: 502, body: { error: 'CRM_READ_ERROR' } });
+  expect((await load()).status).toBe(502);
+});
+
+test('API applies the November boundary in Yerevan and allowed stages after excluding converted leads', async () => {
+  const f = fixture(3);
+  f.leads[1].DATE_CREATE = '2026-10-31T19:59:59Z';
+  f.leads[2].DATE_CREATE = '2026-10-31T20:00:00Z';
+  f.deals[0].STAGE_ID = 'REJECTED';
+  f.deals[3].STAGE_ID = 'REJECTED';
+  f.stages.DEAL_STAGE.push({ STATUS_ID: 'REJECTED', NAME: 'Մերժված' });
+  const result = await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.leads.map(row => row.id)).toEqual([3]);
+  expect(result.body.directDeals).toEqual([]);
+  expect(result.body.deals).toEqual([]);
+});
+
+test('comparison reads all historical sources, Yerevan boundaries and own-source deals with any lead', async () => {
+  const f = fixture(0);
+  f.deals.splice(0, f.deals.length, ...[
+    ['2026-05-31T19:59:59Z', 'OTHER'],
+    ['2026-05-31T20:00:00Z', ''],
+    ['2026-10-31T19:59:59Z', 'OTHER'],
+    ['2026-10-31T20:00:00Z', 'UC_TOON_EXPO'],
+    ['2027-01-01T00:00:00Z', 'UC_TOON_EXPO'],
+    ['2026-11-01T00:00:00Z', 'OTHER'],
+  ].map(([DATE_CREATE, SOURCE_ID], i) => ({ ID: String(100 + i), DATE_CREATE, SOURCE_ID, STAGE_ID: 'NEW', LEAD_ID: '999', CATEGORY_ID: 0, UF_CRM_PROPERTY: '71' })));
+  const result = await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.createdDealsComparison).toEqual({ baselineCount: 2, baselineMonths: 5, baselineMonthlyAverage: 0.4, expoCount: 2 });
+  expect(result.body.directDeals).toEqual([]);
+});
+
+test('comparison paginates historical apartments in the resolved sales funnel and excludes unknown stages', async () => {
+  const f = fixture(0);
+  f.deals.splice(0, f.deals.length, ...Array.from({ length: 55 }, (_, i) => ({
+    ID: String(100 + i), DATE_CREATE: '2026-06-01T00:00:00+04:00', SOURCE_ID: 'OTHER',
+    CATEGORY_ID: 3, UF_CRM_PROPERTY: '71', STAGE_ID: i < 51 ? 'C3:WON' : 'UNKNOWN', LEAD_ID: '0',
+  })));
+  f.categories[0].id = 3;
+  let time=0; f.options.now=()=>new Date(time);
+  const load = createExpoLoader(f.options);
+  expect((await load()).body.createdDealsComparison).toEqual({ baselineCount: 51, baselineMonths: 5, baselineMonthlyAverage: 10.2, expoCount: 0 });
+  const calls = f.requests.length;
+  const copy = await load(); copy.body.createdDealsComparison.baselineCount = 0;
+  expect((await load()).body.createdDealsComparison.baselineCount).toBe(51);
+  expect(f.requests).toHaveLength(calls);
+  f.stages.DEAL_STAGE_3 = []; time=24*60*60*1000;
+  expect((await load({ refresh: true })).body.createdDealsComparison.baselineCount).toBe(0);
+});
+
+test('comparison failures clear the entire cached snapshot', async () => {
+  const f = fixture(0); let fail = false;
+  const original = f.options.fetchImpl;
+  f.options.fetchImpl = async (url, init) => {
+    if (fail && JSON.parse(init.body).filter?.['>=DATE_CREATE']) throw new Error('historical read failed');
+    return original(url, init);
+  };
+  const load = createExpoLoader(f.options);
+  expect((await load()).status).toBe(200);
+  fail = true;
+  expect(await load({ refresh: true })).toEqual({ status: 502, body: { error: 'CRM_READ_ERROR' } });
+  expect((await load()).status).toBe(502);
+  fail = false;
+  expect((await load()).status).toBe(200);
+});
+
+test('batches counted historical pages and all lead relation groups without dropping converted leads', async () => {
+  const f=fixture(103);
+  f.deals.push(...Array.from({length:155},(_,i)=>({ID:String(1000+i),DATE_CREATE:'2026-07-01T00:00:00+04:00',
+    SOURCE_ID:'OTHER',STAGE_ID:'NEW',CATEGORY_ID:0,UF_CRM_PROPERTY:'71',LEAD_ID:'0'})));
+  const result=await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.leads).toHaveLength(101);
+  expect(result.body.deals.map(row=>row.id)).toEqual([74,73]);
+  expect(result.body.createdDealsComparison.baselineCount).toBe(155);
+  const {decodeCommand}=require('../support/crm-fixture.cjs');
+  const packets=f.httpRequests.filter(r=>r.method==='batch').map(r=>Object.values(r.params.cmd).map(decodeCommand));
+  expect(packets.some(rows=>rows.filter(([,p])=>p.filter?.['@LEAD_ID']).length===3)).toBe(true);
+  expect(packets.some(rows=>rows.filter(([,p])=>p.filter?.['>=DATE_CREATE']&&p.start>0).length===3)).toBe(true);
+});
+
+test('caps page and linked-deal batches at fifty commands for more than 2500 leads', async () => {
+  const f=fixture(2601);
+  const result=await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.leads).toHaveLength(2598);
+  expect(f.httpRequests.filter(r=>r.method==='batch').every(r=>Object.keys(r.params.cmd).length<=50)).toBe(true);
+  expect(f.requests.filter(r=>r.method==='crm.deal.list'&&r.params.filter['@LEAD_ID'])).toHaveLength(53);
+});
+
+test.each(['total','changing-total','missing-page','duplicate','short-page','next'])('rejects malformed paginated leads: %s', async broken => {
+  const f=fixture(103), original=f.options.fetchImpl;
+  f.options.fetchImpl=async(url,init)=>{
+    const response=await original(url,init),body=await response.json();
+    if(url.endsWith('/crm.lead.list.json')){
+      if(broken==='total')body.total=-1;
+      if(broken==='next')body.next=0;
+    }
+    const params=JSON.parse(init.body);
+    if(params.cmd){
+      const key=Object.entries(params.cmd).find(([,c])=>c.startsWith('crm.lead.list?'))?.[0];
+      if(key){
+        if(broken==='changing-total')body.result.result_total[key]--;
+        if(broken==='missing-page')delete body.result.result[key];
+        if(broken==='duplicate')body.result.result[key][0].ID='1';
+        if(broken==='short-page')body.result.result[key].pop();
+      }
+    }
+    return {...response,json:async()=>body};
+  };
+  expect((await createExpoLoader(f.options)()).status).toBe(502);
+});
+
+test('falls back to validated next pagination when totals are absent', async () => {
+  const f=fixture(103),original=f.options.fetchImpl;
+  f.options.fetchImpl=async(url,init)=>{
+    const response=await original(url,init),body=await response.json();
+    delete body.total;
+    if(JSON.parse(init.body).cmd)delete body.result.result_total;
+    return {...response,json:async()=>body};
+  };
+  const result=await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.leads).toHaveLength(101);
+  expect(f.requests.filter(r=>r.method==='crm.lead.list').map(r=>r.params.start)).toEqual([0,50,100]);
+});
+
+test('refresh reuses immutable metadata until the exact 24-hour boundary, including after a failed data read', async () => {
+  const f=fixture(3);let time=0;f.options.now=()=>new Date(time);
+  const load=createExpoLoader(f.options);
+  expect((await load()).status).toBe(200);
+  const directoryCount=()=>f.requests.filter(r=>r.method==='crm.status.list').length;
+  const count=directoryCount();
+  f.stages.STATUS[0].NAME='Unknown stage';
+  time=24*60*60*1000-1;
+  expect((await load({refresh:true})).body.leads).toHaveLength(2);
+  expect(directoryCount()).toBe(count);
+  f.leads[0].SOURCE_ID='wrong';
+  expect((await load({refresh:true})).status).toBe(502);
+  f.leads[0].SOURCE_ID='UC_TOON_EXPO';
+  expect((await load()).status).toBe(200);
+  expect(directoryCount()).toBe(count);
+  time++;
+  expect((await load({refresh:true})).body.leads).toHaveLength(0);
+  expect(directoryCount()).toBe(count*2);
+});
+
+test('invalid source metadata is not cached and is retried after correction', async () => {
+  const f=fixture(3);f.stages.SOURCE=[];
+  const load=createExpoLoader(f.options);
+  expect((await load()).status).toBe(502);
+  f.stages.SOURCE=[{ID:'305',STATUS_ID:'UC_TOON_EXPO'}];
+  expect((await load()).status).toBe(200);
+});
+
+ test('historical average includes every source but only sales apartments; Expo totals stay independent', async () => {
+  const f = fixture(0);
+  f.categories[0].id = 3;
+  const base = { DATE_CREATE: '2026-07-01T00:00:00+04:00', CATEGORY_ID: 3, UF_CRM_PROPERTY: '71', STAGE_ID: 'C3:WON', LEAD_ID: '999' };
+  f.deals.splice(0, f.deals.length, ...[
+    { ...base, ID: '100', SOURCE_ID: 'OTHER' },
+    { ...base, ID: '101', SOURCE_ID: '' },
+    { ...base, ID: '102', SOURCE_ID: 'UC_TOON_EXPO' },
+    { ...base, ID: '103', SOURCE_ID: 'OTHER', CATEGORY_ID: 0 },
+    { ...base, ID: '104', SOURCE_ID: 'OTHER', UF_CRM_PROPERTY: '72' },
+    { ...base, ID: '105', SOURCE_ID: 'OTHER', UF_CRM_PROPERTY: null },
+    { ...base, ID: '106', SOURCE_ID: 'UC_TOON_EXPO', CATEGORY_ID: 0, UF_CRM_PROPERTY: '72', DATE_CREATE: '2026-11-02T00:00:00+04:00', STAGE_ID: 'NEW' },
+  ]);
+  const result = await createExpoLoader(f.options)();
+  expect(result.status).toBe(200);
+  expect(result.body.createdDealsComparison).toEqual({ baselineCount: 3, baselineMonths: 5, baselineMonthlyAverage: 0.6, expoCount: 1 });
+  const request = f.requests.find(r => r.method === 'crm.deal.list' && r.params.filter['>=DATE_CREATE']);
+  expect(request.params.filter).toMatchObject({ '=CATEGORY_ID': 3, '=UF_CRM_PROPERTY': '71' });
+  expect(request.params.filter).not.toHaveProperty('=SOURCE_ID');
+ });
+ test.each(['missing-pipeline', 'ambiguous-pipeline', 'missing-apartment', 'invalid-field'])('rejects invalid comparison metadata: %s', async kind => {
+   const f = fixture(0);
+   if (kind === 'missing-pipeline') f.categories.length = 0;
+   if (kind === 'ambiguous-pipeline') f.categories.push({ id: 4, name: 'Վաճառք' });
+   if (kind === 'missing-apartment') f.fields.UF_CRM_PROPERTY.items = [];
+   if (kind === 'invalid-field') f.fields.UF_CRM_PROPERTY.isMultiple = true;
+   expect((await createExpoLoader(f.options)()).status).toBe(502);
+ });
+
+test('progressive Expo publishes counts before history and contacts, with versioned extra views', async () => {
+ const f=fixture(3),load=createExpoLoader(f.options);
+ const first=await load({view:'summary'});expect(first.status).toBe(200);
+ expect(first.body.createdDealsComparison).toBeUndefined();expect(first.body.snapshotId).toEqual(expect.any(String));
+ expect(f.requests.filter(r=>r.method==='crm.item.list')).toHaveLength(0);
+ const comparison=await load({view:'comparison',snapshotId:first.body.snapshotId});
+ expect(comparison.status).toBe(200);expect(comparison.body.createdDealsComparison).toBeDefined();
+ expect(f.requests.filter(r=>r.method==='crm.item.list')).toHaveLength(0);
+ const details=await load({view:'details',snapshotId:first.body.snapshotId});
+ expect(details.body.directDeals[0].customerName).toBe('Անի Պետրոսյան');
+ const before=f.requests.length;await load({view:'details',snapshotId:first.body.snapshotId});expect(f.requests).toHaveLength(before);
+ await load({view:'summary',refresh:true});expect((await load({view:'comparison',snapshotId:first.body.snapshotId})).status).toBe(409);
+});

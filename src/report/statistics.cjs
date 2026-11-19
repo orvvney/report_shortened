@@ -1,0 +1,47 @@
+const { filterDeals, decimal, decimalText, add, compare } = require('./filter.cjs');
+const months = ['Հունվար','Փետրվար','Մարտ','Ապրիլ','Մայիս','Հունիս','Հուլիս','Օգոստոս','Սեպտեմբեր','Հոկտեմբեր','Նոյեմբեր','Դեկտեմբեր'];
+function timeType(period) { return period === 'year' ? 'year' : period === 'quarter' ? 'quarter' : 'month'; }
+function interval(value, step) { const d = decimal(value); const index = d.coefficient / (10n ** BigInt(d.scale) * BigInt(step)); return [index * BigInt(step), (index + 1n) * BigInt(step)]; }
+const grouped = value => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+// Larger visible shares get darker turquoise; equal shares use the same shade.
+function colorRows(rows) {
+ const counts = [...new Set(rows.filter(row=>row.count>0).map(row=>row.count))].sort((a,b)=>b-a);
+ const colors = new Map(counts.map((count,index)=>[count, index === 0 ? '#00a387' : `hsl(170 100% ${32 + index/(counts.length-1)*50}%)`]));
+ return rows.map(row=>({...row,color:colors.get(row.count)||'hsl(170 100% 82%)'}));
+}
+const orderRows = (a,b) => typeof a.order === 'object' && typeof b.order === 'object' ? compare(a.order, b.order) : a.order < b.order ? -1 : a.order > b.order ? 1 : 0;
+function category(deal, type) {
+ let key, label, order;
+ if (type === 'exactAmount') { order = decimal(deal.amount); key = decimalText(order); const [whole, fraction] = key.split('.'); label = `${grouped(whole)}${fraction ? `,${fraction}` : ''} ֏`; }
+  else if (type === 'area' || type === 'amount') { const [a,b] = interval(deal[type], type === 'area' ? 10 : 10000000); key = String(a); label = type === 'area' ? `${grouped(a)}–${grouped(b)} մ²` : `${grouped(a / 1000000n)} մլն–${grouped(b / 1000000n)} մլն ֏`; order = a; }
+  else if (type === 'complex') { key = deal.complex; label = key === 'tower' ? 'Թաուեր' : 'Հիլլս'; order = key === 'tower' ? 0 : 1; }
+  else if (type === 'rooms') { key = String(deal.rooms); label = `${key} սենյակ`; order = deal.rooms; }
+  else { const year = deal.date.slice(0,4), month = Number(deal.date.slice(5,7)), quarter = Math.ceil(month/3); key = type === 'year' ? year : `${year}-${String(type === 'quarter' ? quarter : month).padStart(2,'0')}`; label = type === 'year' ? year : type === 'quarter' ? `${['I','II','III','IV'][quarter-1]} ${year}` : `${months[month-1]} ${year}`; order = key; }
+ return { key, label, order };
+}
+function statistics(deals, filters = {}, type) {
+ const selected = filterDeals(deals, filters);
+ const buckets = new Map();
+ let amount = decimal('0', true);
+ for (const deal of selected) {
+  amount = add(amount, decimal(deal.amount));
+  const row = category(deal, type);
+  if (!buckets.has(row.key)) buckets.set(row.key, {...row, count:0});
+  buckets.get(row.key).count++;
+ }
+ const rows = [...buckets.values()].sort(orderRows).map(row => {
+  const share = selected.length ? row.count / selected.length : 0;
+  return {...row, share, percent:`${(Math.round(share*1000)/10).toString().replace('.',',')}%`};
+ });
+ return { count:selected.length, amount:decimalText(amount), rows:colorRows(rows) };
+}
+function groupCategories(rows, type) {
+ if (!['area','amount'].includes(type) || rows.length <= 4) return rows;
+ const largest = new Set([...rows].sort((a,b) => b.count-a.count || orderRows(a,b)).slice(0,4).map(row=>row.key));
+ const children = rows.filter(row=>!largest.has(row.key));
+ const count = children.reduce((sum,row)=>sum+row.count,0);
+ const total = rows.reduce((sum,row)=>sum+row.count,0), share = count/total;
+ const other = {key:'other',label:'Այլ',count,share,percent:`${(Math.round(share*1000)/10).toString().replace('.',',')}%`,children};
+ return colorRows([...rows.filter(row=>largest.has(row.key)),other]);
+}
+module.exports = { statistics, timeType, interval, groupCategories, colorRows };
