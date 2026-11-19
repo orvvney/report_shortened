@@ -717,65 +717,62 @@ dialog::backdrop { background: rgb(29 40 62 / 45%); }
 .report-shell-reduced .property-report {
   margin-top: 0;
 }
-.report-shell-reduced .filter-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 16px;
-}
-.report-shell-reduced .filter-first-row,
-.report-shell-reduced .filter-second-row {
-  display: contents;
-}
-.report-shell-reduced .filter-row .date-filter,
-.report-shell-reduced .filter-row .room-filter {
-  grid-column: 1;
-}
-.report-shell-reduced .filter-row .complex-filter,
-.report-shell-reduced .filter-row .range-filter {
-  grid-column: 2;
-}
-.report-shell-reduced .report-top-panels.top-wide .complex-filter,
-.report-shell-reduced .report-top-panels.top-wide .room-filter,
-.report-shell-reduced .report-top-panels.top-wide .filter-second-row > .range-filter:last-child {
-  left: 0;
-}
-.report-shell-reduced .filter-panel .complex-buttons {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: repeat(2, 32px);
-  gap: 8px;
-}
-.report-shell-reduced .complex-buttons button {
-  width: 100%;
-}
-.report-shell-reduced .filter-panel .room-buttons {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  gap: 8px;
-}
-.report-shell-reduced .room-buttons .all-rooms {
-  width: 100%;
-  padding-inline: 0;
-}
-.report-shell-reduced .filter-panel .room-values {
-  display: flex;
-  flex-wrap: nowrap;
-  justify-content: flex-start;
-  width: auto;
-  min-width: 0;
-  overflow-x: auto;
-}
-.report-shell-reduced .room-values button {
-  flex: 1 0 24px;
-  width: 24px;
-  margin-left: 0;
-}
-.report-shell-reduced .quarter-room-row {
-  display: contents;
-}
-@media (max-width: 639px) {
-  .report-shell-reduced .range-filter .range-inputs {
+@media (min-width: 640px) {
+  .report-shell-reduced .filter-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 16px;
+  }
+  .report-shell-reduced .filter-first-row,
+  .report-shell-reduced .filter-second-row {
+    display: contents;
+  }
+  .report-shell-reduced .filter-row .date-filter,
+  .report-shell-reduced .filter-row .room-filter {
+    grid-column: 1;
+  }
+  .report-shell-reduced .filter-row .complex-filter,
+  .report-shell-reduced .filter-row .range-filter {
+    grid-column: 2;
+  }
+  .report-shell-reduced .report-top-panels.top-wide .complex-filter,
+  .report-shell-reduced .report-top-panels.top-wide .room-filter,
+  .report-shell-reduced .report-top-panels.top-wide .filter-second-row > .range-filter:last-child {
+    left: 0;
+  }
+  .report-shell-reduced .filter-panel .complex-buttons {
+    display: grid;
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, 32px);
+    gap: 8px;
+  }
+  .report-shell-reduced .complex-buttons button {
+    width: 100%;
+  }
+  .report-shell-reduced .filter-panel .room-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 8px;
+  }
+  .report-shell-reduced .room-buttons .all-rooms {
+    width: 100%;
+    padding-inline: 0;
+  }
+  .report-shell-reduced .filter-panel .room-values {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    width: auto;
+    min-width: 0;
+    overflow-x: auto;
+  }
+  .report-shell-reduced .room-values button {
+    flex: 1 0 24px;
+    width: 24px;
+    margin-left: 0;
+  }
+  .report-shell-reduced .quarter-room-row {
+    display: contents;
   }
 }

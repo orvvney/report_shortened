@@ -68,34 +68,44 @@ test.each([375, 640, 1024, 1440])('reduced report keeps two sections and their l
   const complex = await page.locator('.complex-filter').boundingBox();
   const period = await page.locator('.date-filter').boundingBox();
   const complexButtons = await page.locator('.complex-buttons').boundingBox();
-  expect(area.x).toBeGreaterThan(rooms.x);
-  expect(area.y).toBe(rooms.y);
-  expect(complex.x).toBeGreaterThan(period.x);
-  expect(complex.y).toBe(period.y);
-  expect(complex.x).toBeCloseTo(area.x, 0);
-  expect(complex.width).toBeCloseTo(area.width, 0);
-  expect(complexButtons.width).toBeCloseTo(complex.width, 0);
-  expect(complex.y + complex.height).toBeLessThan(rooms.y);
-
-  const tower = await page.getByRole('button', { name: 'Թաուեր', exact: true }).boundingBox();
-  const hills = await page.getByRole('button', { name: 'Հիլլս', exact: true }).boundingBox();
-  expect(tower.x).toBeCloseTo(complex.x, 0);
-  expect(hills.x).toBeCloseTo(tower.x, 0);
-  expect(tower.width).toBeCloseTo(complex.width, 0);
-  expect(hills.width).toBeCloseTo(tower.width, 0);
-  expect(hills.y).toBeGreaterThan(tower.y + tower.height);
-
   const allRooms = page.getByRole('button', { name: 'Բոլորը', exact: true });
-  const allRoomsBox = await allRooms.boundingBox();
   const roomValues = page.locator('.room-values');
-  const roomValuesBox = await roomValues.boundingBox();
-  expect(roomValuesBox.width).toBeCloseTo(allRoomsBox.width, 0);
-  expect(await roomValues.locator('button').allTextContents()).toEqual(['1', '2', '3', '4', '5']);
   const numberedRooms = await roomValues.locator('button').all();
-  for (const button of numberedRooms) {
-    const box = await button.boundingBox();
-    expect(box.x).toBeGreaterThan(allRoomsBox.x + allRoomsBox.width);
-    expect(box.y).toBeCloseTo(allRoomsBox.y, 0);
+  if (width < 640) {
+    expect(period.x).toBeCloseTo(complex.x, 0);
+    expect(complex.y).toBeGreaterThan(period.y);
+    expect(rooms.x).toBeGreaterThan(complex.x);
+    expect(rooms.y).toBe(complex.y);
+    expect(area.y).toBeGreaterThan(rooms.y);
+    expect(area.x).toBeCloseTo(period.x, 0);
+    expect(area.width).toBeCloseTo(period.width, 0);
+  } else {
+    expect(area.x).toBeGreaterThan(rooms.x);
+    expect(area.y).toBe(rooms.y);
+    expect(complex.x).toBeGreaterThan(period.x);
+    expect(complex.y).toBe(period.y);
+    expect(complex.x).toBeCloseTo(area.x, 0);
+    expect(complex.width).toBeCloseTo(area.width, 0);
+    expect(complexButtons.width).toBeCloseTo(complex.width, 0);
+    expect(complex.y + complex.height).toBeLessThan(rooms.y);
+
+    const tower = await page.getByRole('button', { name: 'Թաուեր', exact: true }).boundingBox();
+    const hills = await page.getByRole('button', { name: 'Հիլլս', exact: true }).boundingBox();
+    expect(tower.x).toBeCloseTo(complex.x, 0);
+    expect(hills.x).toBeCloseTo(tower.x, 0);
+    expect(tower.width).toBeCloseTo(complex.width, 0);
+    expect(hills.width).toBeCloseTo(tower.width, 0);
+    expect(hills.y).toBeGreaterThan(tower.y + tower.height);
+
+    const allRoomsBox = await allRooms.boundingBox();
+    const roomValuesBox = await roomValues.boundingBox();
+    expect(roomValuesBox.width).toBeCloseTo(allRoomsBox.width, 0);
+    expect(await roomValues.locator('button').allTextContents()).toEqual(['1', '2', '3', '4', '5']);
+    for (const button of numberedRooms) {
+      const box = await button.boundingBox();
+      expect(box.x).toBeGreaterThan(allRoomsBox.x + allRoomsBox.width);
+      expect(box.y).toBeCloseTo(allRoomsBox.y, 0);
+    }
   }
   await numberedRooms.at(-1).click();
   expect(await count.innerText()).toBe('1');
